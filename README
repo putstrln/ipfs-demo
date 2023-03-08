@@ -1,0 +1,4 @@
+# ipfs-demo
+A quick multi-user drawing demo based on orbit-db example https://github.com/orbitdb/orbit-db/blob/main/examples/browser/browser.html.
+
+You can create a new database in one browser session. Save that database id string, open it on a different browser/computer, and draw something together in real-time.

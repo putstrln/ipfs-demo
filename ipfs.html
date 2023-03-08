@@ -1,0 +1,313 @@
+<html>
+  <head>
+    <meta charset="utf-8">
+    <link href="https://fonts.googleapis.com/css?family=Abel" rel="stylesheet">
+    <style>
+      body {
+        font-family: 'Abel', sans-serif;
+        font-size: 0.8em;
+      }
+      
+      #logo {
+        border-top: 1px dotted black;
+        border-bottom: 1px dotted black;
+      }
+      
+      #status {
+        border-top: 1px dotted black;
+        border-bottom: 1px dotted black;
+        padding: 0.5em 0em;
+        text-align: center;
+      }
+      
+      #results {
+        border: 1px dotted black;
+        padding: 0.5em;
+      }
+      
+      #output-header > p {
+        margin: 0;
+        font-style: italic;
+      }
+      
+      #output {
+        padding-top: 1em;
+      }
+      
+      #writerText {
+        padding-top: 0.5em;
+      }
+      
+      pre {
+        text-align: center;
+      }
+      
+      input {
+        padding: 0.5em;
+      }
+      
+      h2 {
+        margin-bottom: 0.2em;
+      }
+      h3 {
+        margin-top: 0.8em;
+        margin-bottom: 0.2em;
+      }      
+      #type, #public, #public-label, #readonly, #readonly-label {
+        visibility: hidden;
+      }
+    </style>
+  </head>
+
+  <body>
+    <h2>Open or Create Local Database</h2>
+    <i>Open a database locally and create it if the database doesn't exist.</i>
+    <br><br>
+    <input id="dbname" type="text" placeholder="Database name"/>
+    <button id="create" type="button" disabled>Open</button>
+    <select id="type">
+      <option value="eventlog">Eventlog</option>
+      <option value="feed">Feed</option>
+      <option value="keyvalue">Key-Value</option>
+      <option value="docstore">DocumentDB</option>
+      <option value="counter">Counter</option>
+    </select>
+    <input id="public" type="checkbox" checked><span id='public-label'> Public</span>
+
+    <h2>Open Remote Database</h2>
+    <i>Open a database from an OrbitDB address, eg. /orbitdb/QmfY3udPcWUD5NREjrUV351Cia7q4DXNcfyRLJzUPL3wPD/hello</i>
+    <br>
+    <i><b>Note!</b> Open the remote database in an Incognito Window or in a different browser. It won't work if you don't.</i>
+    <br><br>
+    <input id="dbaddress" type="text" placeholder="Address"/>
+    <button id="open" type="button" disabled>Open</button>
+    <input id="readonly" type="checkbox" checked><span id="readonly-label"> Read-only</span>
+    <br><br>
+    <div id="status">Init</div>
+    <div>
+      <header id="output-header"></header>
+      <div id="output"></div>
+    </div>
+    <div id="writerText"></div>
+    <canvas id="drawing-board" width="96vw" height="600" style="border:1px solid black;"></canvas>
+
+    <script src='https://cdnjs.cloudflare.com/ajax/libs/fabric.js/1.7.19/fabric.min.js'></script>
+    <script type="text/javascript" src="https://ipfs.io/ipfs/QmVWQMLUM3o4ZFbLtLMS1PMLfodeEeBkBPR2a2R3hqQ337/lib/orbitdb.min.js" charset="utf-8"></script>
+    <script type="text/javascript" src="https://ipfs.io/ipfs/QmVWQMLUM3o4ZFbLtLMS1PMLfodeEeBkBPR2a2R3hqQ337/lib/ipfs.min.js" charset="utf-8"></script>
+    <script>
+      const outputHeaderElm = document.getElementById("output-header")
+      const outputElm = document.getElementById("output")
+      const statusElm = document.getElementById("status")
+      const dbnameField = document.getElementById("dbname")
+      const dbAddressField = document.getElementById("dbaddress")
+      const createButton = document.getElementById("create")
+      const openButton = document.getElementById("open")
+      const createType = document.getElementById("type")
+      const writerText = document.getElementById("writerText")
+      const publicCheckbox = document.getElementById("public")
+      const readonlyCheckbox = document.getElementById("readonly")
+
+      const main = async (IPFS, ORBITDB) => {
+        let orbitdb, db
+        let updateInterval
+        let dbType, dbAddress
+
+        // Init UI
+        openButton.disabled = true
+        createButton.disabled = true
+        statusElm.innerHTML = "Starting IPFS..."
+
+        // Create IPFS instance
+        const ipfs = await Ipfs.create({
+          repo: '/orbitdb/examples/browser/new/ipfs/0.33.1',
+          start: true,
+          preload: { 
+            enabled: false
+          },
+          EXPERIMENTAL: {
+            pubsub: true,
+          },
+          config: {
+            Addresses: {
+              Swarm: [
+                // Use IPFS dev webrtc signal server
+                '/dns4/wrtc-star1.par.dwebops.pub/tcp/443/wss/p2p-webrtc-star/',
+                '/dns4/wrtc-star2.sjc.dwebops.pub/tcp/443/wss/p2p-webrtc-star/',
+                '/dns4/webrtc-star.discovery.libp2p.io/tcp/443/wss/p2p-webrtc-star/',
+              ]
+            },
+          }
+        })
+
+        openButton.disabled = false
+        createButton.disabled = false
+        statusElm.innerHTML = "IPFS Started"
+        orbitdb = await OrbitDB.createInstance(ipfs)
+
+        const load = async (db, statusText) => {
+          // Set the status text
+          statusElm.innerHTML = statusText
+
+          // When the database is ready (ie. loaded), display results
+          db.events.on('ready', () => queryAndRender(db))
+          // When database gets replicated with a peer, display results
+          db.events.on('replicated', () => queryAndRender(db))
+          // When we update the database, display result
+          db.events.on('write', () => queryAndRender(db))
+
+          db.events.on('replicate.progress', () => queryAndRender(db))
+
+          // Hook up to the load progress event and render the progress
+          let maxTotal = 0, loaded = 0
+          db.events.on('load.progress', (address, hash, entry, progress, total) => {
+            loaded ++
+            maxTotal = Math.max.apply(null, [maxTotal, progress, 0])
+            total = Math.max.apply(null, [progress, maxTotal, total, entry.clock.time, 0])
+            statusElm.innerHTML = `Loading database... ${maxTotal} / ${total}`
+          })
+
+          db.events.on('ready', () => {
+            // Set the status text
+            setTimeout(() => {
+              statusElm.innerHTML = 'Database is ready'
+            }, 1000)
+          })
+
+          // Load locally persisted database
+          await db.load()
+        }
+
+        const resetDatabase = async (db) => {
+          writerText.innerHTML = ""
+          outputElm.innerHTML = ""
+          outputHeaderElm.innerHTML = ""
+
+          clearInterval(updateInterval)
+
+          if (db) {
+            await db.close()
+          }
+
+          interval = Math.floor((Math.random() * 300) + (Math.random() * 2000))
+        }
+
+        const createDatabase = async () => {
+          await resetDatabase(db)
+
+          openButton.disabled = true
+          createButton.disabled = true
+
+          try {
+            const name = dbnameField.value
+            const type = createType.value
+            const publicAccess = publicCheckbox.checked
+
+            db = await orbitdb.open(name, {
+              // If database doesn't exist, create it
+              create: true, 
+              overwrite: true,
+              // Load only the local version of the database, 
+              // don't load the latest from the network yet
+              localOnly: false,
+              type: type,
+              // If "Public" flag is set, allow anyone to write to the database,
+              // otherwise only the creator of the database can write
+              accessController: {
+                write: publicAccess ? ['*'] : [orbitdb.identity.id],
+              }
+            })
+
+            await load(db, 'Creating database...')
+          } catch (e) {
+            console.error(e)
+          }
+          openButton.disabled = false
+          createButton.disabled = false
+        }
+
+        const openDatabase = async () => {
+          const address = dbAddressField.value
+
+          await resetDatabase(db)
+
+          openButton.disabled = true
+          createButton.disabled = true
+
+          try {
+            statusElm.innerHTML = "Connecting to peers..."
+            db = await orbitdb.open(address, { sync: true })
+            await load(db, 'Loading database...')
+
+            if (!readonlyCheckbox.checked) {
+            } else {
+              writerText.innerHTML = `Listening for updates to the database...`
+            }
+          } catch (e) {
+            console.error(e)
+          }
+          openButton.disabled = false
+          createButton.disabled = false
+        }
+
+        const query = (db) => {
+          if (db.type === 'eventlog')
+            return db.iterator({ limit: 5 }).collect()
+          else if (db.type === 'feed')
+            return db.iterator({ limit: 5 }).collect()
+          else if (db.type === 'docstore')
+            return db.get('peer1')
+          else if (db.type === 'keyvalue')
+            return db.get('mykey')
+          else if (db.type === 'counter')
+            return db.value
+          else
+            throw new Error("Unknown datatbase type: ", db.type)
+        }
+
+        const queryAndRender = async (db) => {
+          const networkPeers = await ipfs.swarm.peers()
+          const databasePeers = await ipfs.pubsub.peers(db.address.toString())
+
+          const result = query(db)
+          writerText.innerHTML = 'Updated drawing at ' + (new Date()).toLocaleTimeString()
+
+          updateBoard(result)
+          if (dbType !== db.type || dbAddress !== db.address) {
+            dbType = db.type;
+            dbAddress = db.address;
+
+            outputHeaderElm.innerHTML = `
+              <h2>${dbType.toUpperCase()}</h2>
+              <h3 id="remoteAddress">${dbAddress}</h3>
+              <p>Copy this address and use the 'Open Remote Database' in another browser to replicate this database between peers.</p>
+            `
+          }
+        }
+
+        canvas.selection = true
+        canvas.on('path:created', function(e) {
+        const paths = canvas.toJSON();
+        if (db)
+          db.add(paths)
+        });
+
+        const updateBoard = (result) => {
+          const paths = result.slice().map(e => e.payload.value)
+          console.log('got paths', paths[paths.length - 1])
+          canvas.loadFromJSON(paths[paths.length - 1])
+        }
+
+        openButton.addEventListener('click', openDatabase)
+        createButton.addEventListener('click', createDatabase)
+      }
+    
+      const canvas = new fabric.Canvas('drawing-board');
+      canvas.isDrawingMode = true;
+      canvas.freeDrawingBrush.width = 5;
+      canvas.setWidth(window.innerWidth - 20)
+      canvas.selection = false
+      // Start the example
+      main()
+    </script>
+  </body>
+</html>
